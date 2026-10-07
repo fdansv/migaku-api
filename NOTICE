@@ -1,0 +1,9 @@
+Migaku Local API
+Copyright (c) 2026 Francisco Dans and contributors
+Wrapper code: MIT License. See LICENSE.
+
+This is an independent, unofficial client around the user's installed Migaku
+extension. The extension, dictionaries, account services and authenticated
+browser profiles are not distributed with this project and retain their own
+ownership/licensing. The adapter invokes extension methods and dynamically
+imports installed modules at runtime. No endorsement by Migaku is implied.

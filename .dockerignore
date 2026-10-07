@@ -1,0 +1,9 @@
+*
+!Dockerfile
+!requirements.txt
+!migaku_api/
+!migaku_api/**
+!LICENSE
+!NOTICE
+**/__pycache__/
+**/*.pyc

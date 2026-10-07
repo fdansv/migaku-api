@@ -1,0 +1,14 @@
+services:
+  migaku-api:
+    build: .
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8766:8766"
+    environment:
+      MIGAKU_API_TOKEN: ${MIGAKU_API_TOKEN:?Set a private API token in .env}
+      MIGAKU_LANGUAGES: ja
+    volumes:
+      - ./.runtime:/data
+      - ${MIGAKU_EXTENSION_PATH:?Set the Migaku extension directory in .env}:/extension:ro
+    shm_size: 1gb

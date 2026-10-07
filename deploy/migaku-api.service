@@ -1,0 +1,17 @@
+[Unit]
+Description=Migaku vocabulary and card API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/repos/migaku-api
+EnvironmentFile=%h/repos/migaku-api/.runtime/service.env
+ExecStart=%h/repos/migaku-api/.venv/bin/python -m migaku_api
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+UMask=0077
+
+[Install]
+WantedBy=default.target
