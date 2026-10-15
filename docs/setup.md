@@ -22,6 +22,32 @@ your own compatible installed extension or update/revalidate the adapter;
 do not disable the hash checks. Login, OS browser dependencies, cloud sync and
 actual account RPCs still require live checks through `/worker`.
 
+### Experimental EA 1.31.0.17
+
+The installed Chrome extension may already be newer than the verified profile.
+This preview includes a separately reviewed, exact-hash **1.31.0.17** helper
+mapping: its translation and explanation exports moved, so reusing the old
+aliases or removing version checks is unsafe. Static module/prompt checks and
+mocked adapter tests pass. Fresh authenticated login, cloud synchronization and
+card creation have **not** been verified for this profile. It is disabled by
+default; the verified full integration remains **1.31.0.16**.
+
+To try 1.31.0.17 deliberately with your own installed extension:
+
+```sh
+export MIGAKU_ENABLE_EXPERIMENTAL_131017=1
+.venv/bin/python -m migaku_api.doctor
+MIGAKU_HEADLESS=0 .venv/bin/python -m migaku_api
+```
+
+Complete normal headed login/onboarding, acknowledge the Chromium compatibility
+notice if shown, select Japanese and your deck, then check `/worker`, analysis,
+translation and a test card in your own account. Keep the same variable in
+your service environment or private Docker `.env` when restarting. The opt-in
+does not bypass either asset checksum. Other versions remain unsupported for
+enrichment until their interfaces are reviewed. The repository cannot supply
+an old extension or another user's signed-in profile.
+
 ## Login and persistent state
 
 Follow the README's headed first-login steps using the same runtime directory that the headless service will use. Only one process may own that directory/profile. Stop the headless service before signing in again with `MIGAKU_HEADLESS=0`, and stop the headed process before restarting the service.

@@ -7,13 +7,15 @@ import platform
 
 from playwright.sync_api import sync_playwright
 
-from .browser import ENRICHMENT_VERSION, WorkerError, discover_core, enrichment_compatible, find_extension
+from .browser import (ENRICHMENT_ASSETS, EXPERIMENTAL_VERSION, WorkerError, discover_core,
+                      enrichment_compatible, experimental_profile_enabled, find_extension)
 
 
 def inspect_extension(extension):
     report = {'installed_version': None, 'rpc_factory_found': False,
               'card_enrichment_and_translation_compatible': False,
-              'required_enrichment_version': ENRICHMENT_VERSION}
+              'supported_enrichment_versions': [v for v in ENRICHMENT_ASSETS if v != EXPERIMENTAL_VERSION],
+              'experimental_enrichment_versions': [EXPERIMENTAL_VERSION]}
     if not extension:
         report['error'] = 'No extension found. Set MIGAKU_EXTENSION_PATH to your installed extension directory.'
         return report
@@ -21,9 +23,15 @@ def inspect_extension(extension):
         core = discover_core(extension)
         report['installed_version'] = core['version']
         report['rpc_factory_found'] = True
-        report['card_enrichment_and_translation_compatible'] = enrichment_compatible(extension, core['version'])
+        report['assets_match'] = enrichment_compatible(extension, core['version'])
+        report['experimental_profile'] = core['version'] == EXPERIMENTAL_VERSION
+        report['experimental_profile_enabled'] = experimental_profile_enabled()
+        report['card_enrichment_and_translation_compatible'] = bool(report['assets_match'] and
+            (not report['experimental_profile'] or report['experimental_profile_enabled']))
         if not report['card_enrichment_and_translation_compatible']:
-            report['error'] = 'The installed extension needs an adapter compatibility review; installing it alone will not enable card enrichment.'
+            report['error'] = ('Experimental 1.31.0.17 assets match, but the profile is disabled; see MIGAKU_ENABLE_EXPERIMENTAL_131017 in the setup guide.'
+                if report['assets_match'] else
+                'The installed extension needs an adapter compatibility review; installing it alone will not enable card enrichment.')
     except (OSError, ValueError, KeyError, WorkerError) as error:
         report['error'] = str(error)
     return report

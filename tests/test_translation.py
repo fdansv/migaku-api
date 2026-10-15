@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 
 import playwright
+import pytest
 from fastapi.testclient import TestClient
 
 from migaku_api.app import create_app
@@ -33,7 +34,8 @@ def test_translation_endpoint_is_authenticated_and_does_not_create_cards(tmp_pat
         assert client.post("/text/translate", json=body, headers=headers).status_code == 503
 
 
-def test_translation_uses_configured_language_and_prompt_without_card_helpers():
+@pytest.mark.parametrize('translation_export', ['d', 'T'])
+def test_translation_uses_configured_language_and_prompt_without_card_helpers(translation_export):
     node = Path(playwright.__file__).parent / "driver" / "node"
     source = Path(__file__).parents[1] / "migaku_api" / "translate.js"
     script = r"""
@@ -44,14 +46,14 @@ globalThis.settings = {designatedLangs:{lang:'ja',translationLang:'es'},
 globalThis.core = {AiMgr_promptStreamSynced:async prompt=>{
     globalThis.prompt=prompt; return {isSuccess:true,value:' Leí un libro. '}; }};
 const native = 'export const d=()=>globalThis.core,u=()=>globalThis.settings;';
-const helpers = 'export const d=(text,target,custom)=>({text,target,custom});';
+const helpers = `export const ${fixture.translationExport}=(text,target,custom)=>({text,target,custom});`;
 globalThis.chrome = {runtime:{getURL:name=>'data:text/javascript,'+encodeURIComponent(name==='native'?native:helpers)}};
 const translate = eval('('+fs.readFileSync(fixture.source,'utf8')+')');
-const result = await translate({coreModule:'native',helperModule:'helpers',input:{language:'ja',text:'本を読みました。'}});
+const result = await translate({coreModule:'native',helperModule:'helpers',exports:{core:'d',settings:'u',translation:fixture.translationExport},input:{language:'ja',text:'本を読みました。'}});
 console.log(JSON.stringify({result,prompt:globalThis.prompt}));
 """
     result = subprocess.run([str(node), "--input-type=module", "-e", script],
-                            input=json.dumps({"source": str(source)}), text=True,
+                            input=json.dumps({"source": str(source), "translationExport": translation_export}), text=True,
                             capture_output=True, check=True, timeout=10)
     output = json.loads(result.stdout)
     assert output["result"] == {"language": "ja", "text": "本を読みました。",
@@ -74,7 +76,7 @@ def test_slow_translation_does_not_block_word_status_rpc(tmp_path):
         browser.context = object()
         browser.core = {"module": "test", "export": "core", "version": "test"}
         browser.page = Page()
-        browser.check_enrichment_assets = lambda: None
+        browser.check_enrichment_assets = lambda: {'coreModule':'test','helperModule':'test'}
         translation = asyncio.create_task(browser.translate_text({"language": "ja", "text": "本"}))
         await asyncio.wait_for(started.wait(), timeout=1)
         try:

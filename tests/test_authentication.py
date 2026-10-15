@@ -61,6 +61,8 @@ class AuthBrowser(MigakuBrowser):
         self.auth_check_error = False
         self.passwords = []
         self.login_page_closed = False
+        self.login_form_visible = False
+        self.notice_visible = False
 
     async def call(self, method, params=None, timeout=45):
         if method == "Firebase_waitForAuthCheckDone":
@@ -81,6 +83,12 @@ class AuthBrowser(MigakuBrowser):
     def locator(self, selector):
         browser = self
         class Locator:
+            async def is_visible(self):
+                if selector == 'browser-notice':
+                    return browser.notice_visible
+                assert selector == 'form input[type="email"]'
+                return browser.login_form_visible
+
             async def fill(self, value, timeout):
                 if selector == 'input[type="password"]':
                     browser.passwords.append(value)
@@ -89,12 +97,23 @@ class AuthBrowser(MigakuBrowser):
                     assert value == "test@example.invalid"
 
             async def click(self, timeout):
-                assert selector == 'button[type="submit"]'
+                if selector == 'browser-notice':
+                    browser.notice_visible = False
+                    return
+                assert selector == 'form button[type="submit"]'
+
+            async def evaluate(self, expression, timeout):
+                assert selector == 'form button[type="submit"]'
+                assert 'button.click()' in expression
 
             async def wait_for(self, state, timeout):
                 assert selector == 'input[type="email"]' and state == "hidden"
                 await browser.finish_login()
         return Locator()
+
+    def get_by_role(self, role, name, exact):
+        assert role == 'button' and name == 'OK, got it' and exact
+        return self.locator('browser-notice')
 
     async def finish_login(self):
         await asyncio.sleep(0)
@@ -103,6 +122,7 @@ class AuthBrowser(MigakuBrowser):
         if not self.success:
             raise TimeoutError("Login form still open")
         self.authenticated = self.success
+        self.login_form_visible = False
 
     async def close(self):
         self.login_page_closed = True
@@ -170,3 +190,14 @@ def test_absent_credentials_keep_manual_login_and_browser_errors_do_not_trigger_
 def test_configurable_credentials_path(tmp_path, monkeypatch):
     monkeypatch.setenv("MIGAKU_CREDENTIALS_FILE", str(tmp_path / "private-login"))
     assert MigakuBrowser(tmp_path).credentials_file == tmp_path / "private-login"
+
+
+def test_fresh_profile_reuses_visible_login_form_before_core_auth_rpc(tmp_path):
+    browser = AuthBrowser(write_credentials(tmp_path / 'CREDS'))
+    browser.login_form_visible = True
+    browser.notice_visible = True
+    assert run(browser.status())['ready']
+    assert browser.authenticated
+    assert browser.attempts == 0
+    assert not browser.login_page_closed
+    assert not browser.notice_visible

@@ -6,6 +6,11 @@ The service runs the actual Migaku extension in a separate persistent Chromium p
 
 **Developer preview.** Verified against Migaku Early Access **1.31.0.16**, Playwright **1.63.0**, Chromium **153** and Python **3.12**. The card-enrichment adapter checks exact extension asset hashes and rejects unsupported versions. Other extension versions need compatibility review. Docker files are supplied, but the complete container/login workflow has not yet been verified.
 
+EA **1.31.0.17** has an [opt-in experimental helper profile](docs/setup.md#experimental-ea-131017).
+Its assets/exports have been reviewed, but the authenticated flow is not verified.
+Run the doctor before choosing a setup path; a fresh extension install may have
+this newer version rather than the verified one.
+
 ## Features
 
 - Search a local synchronized vocabulary index by headword, reading and learning status.

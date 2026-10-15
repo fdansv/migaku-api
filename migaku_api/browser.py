@@ -10,18 +10,33 @@ from playwright.async_api import async_playwright
 
 from .credentials import CredentialsError, load_credentials
 
-ENRICHMENT_VERSION = '1.31.0.16'
 ENRICHMENT_ASSETS = {
-    'player-store-bd8f4b49.js': 'e2674057579ef893eb83f82cab8d3814679085626073c9996896d62113a55b3f',
-    'UiCallout-7750a374.js': '619866c53648d4e02a0b75b9355732fa9318178e4751c9f9c6614f3a62c54f3c',
+    '1.31.0.16': {
+        'player-store-bd8f4b49.js': 'e2674057579ef893eb83f82cab8d3814679085626073c9996896d62113a55b3f',
+        'UiCallout-7750a374.js': '619866c53648d4e02a0b75b9355732fa9318178e4751c9f9c6614f3a62c54f3c',
+    },
+    '1.31.0.17': {
+        'player-store-f1fc3b5f.js': 'df10166c3e4be387c0602e2f99480455fb8db34d2b166dd1038b890639746bda',
+        'UiCallout-509f2f89.js': 'c762b9fa59d0528c8fd8f1a7202791f535d264a67c498925dd913f210773bf63',
+    },
 }
+ENRICHMENT_EXPORTS = {
+    '1.31.0.16': {'core': 'd', 'settings': 'u', 'format': 'ah', 'dictionary': 'n', 'translation': 'd', 'explanation': 'C'},
+    '1.31.0.17': {'core': 'd', 'settings': 'u', 'format': 'ah', 'dictionary': 'n', 'translation': 'T', 'explanation': 'x'},
+}
+EXPERIMENTAL_VERSION = '1.31.0.17'
+
+
+def experimental_profile_enabled():
+    return os.environ.get('MIGAKU_ENABLE_EXPERIMENTAL_131017') == '1'
 
 
 def enrichment_compatible(extension: Path, version: str) -> bool:
-    return version == ENRICHMENT_VERSION and all(
+    assets = ENRICHMENT_ASSETS.get(version)
+    return bool(assets) and all(
         (extension / 'assets' / name).is_file() and
         hashlib.sha256((extension / 'assets' / name).read_bytes()).hexdigest() == digest
-        for name, digest in ENRICHMENT_ASSETS.items()
+        for name, digest in assets.items()
     )
 
 class WorkerError(Exception):
@@ -65,6 +80,7 @@ def discover_core(extension: Path) -> dict:
             return {"version": manifest["version"],
                     "module": str(asset.relative_to(extension)), "export": alias[1]}
     raise WorkerError("unsupported_extension", "Could not locate Migaku's core RPC factory in this extension version.")
+
 
 
 class MigakuBrowser:
@@ -155,7 +171,7 @@ class MigakuBrowser:
         # Only sign in after an explicit logged-out result, never after a network
         # or browser error. Concurrent requests share one bounded attempt.
         async with self.auth_lock:
-            if await self.call("Firebase_waitForAuthCheckDone", timeout=15):
+            if not await self._login_form_visible() and await self.call("Firebase_waitForAuthCheckDone", timeout=15):
                 self.auth_retry_at = 0.0
                 self.auth_error = None
                 return True
@@ -183,20 +199,39 @@ class MigakuBrowser:
                 pass
             return False
 
+    async def _login_form_visible(self):
+        try:
+            return await self.page.locator('form input[type="email"]').is_visible()
+        except Exception:
+            return False
+
     async def _sign_in(self, credentials):
         # Use Migaku's complete login form: the bare Firebase sign-in RPC omits
         # subscription checks and app/database initialization. A separate page
         # preserves in-flight RPCs on the worker's main page.
-        page = await self.context.new_page()
+        use_main_page = await self._login_form_visible()
+        page = self.page if use_main_page else await self.context.new_page()
         try:
-            await page.goto(f"chrome-extension://{self.extension_id}/pages/app-window/index.html")
+            if not use_main_page:
+                await page.goto(f"chrome-extension://{self.extension_id}/pages/app-window/index.html")
+            notice = page.get_by_role('button', name='OK, got it', exact=True)
+            if await notice.is_visible():
+                # Fresh Chromium profiles show an informational browser notice
+                # over the login form. It must be acknowledged before clicking.
+                await notice.click(timeout=5_000)
             await page.locator('input[type="email"]').fill(credentials.email, timeout=15_000)
             await page.locator('input[type="password"]').fill(credentials.password, timeout=15_000)
-            await page.locator('button[type="submit"]').click(timeout=15_000)
+            # The interface-language menu also has a submit button. Scope this
+            # locator to the login form so it cannot select that unrelated button.
+            # The fresh-profile page animates its layout in headless Chromium.
+            # Activate this exact native button without waiting for a stationary
+            # pointer target; Migaku still handles normal form validation/login.
+            await page.locator('form button[type="submit"]').evaluate('(button) => button.click()', timeout=15_000)
             await page.locator('input[type="email"]').wait_for(state="hidden", timeout=30_000)
             return True
         finally:
-            await page.close()
+            if not use_main_page:
+                await page.close()
 
     async def status(self):
         result = {"running": bool(self.context), "headless": self.headless,
@@ -206,7 +241,10 @@ class MigakuBrowser:
             result["error"] = self.last_error
             return result
         try:
-            result["authenticated"] = bool(await self.call("Firebase_waitForAuthCheckDone", timeout=15))
+            # A brand-new profile displays a login form before its core RPC
+            # handler is ready. The visible form is an explicit logged-out state.
+            form_visible = await self._login_form_visible()
+            result["authenticated"] = False if form_visible else bool(await self.call("Firebase_waitForAuthCheckDone", timeout=15))
             if not result["authenticated"]:
                 result["authenticated"] = await self.recover_authentication()
             if result["authenticated"]:
@@ -246,13 +284,12 @@ class MigakuBrowser:
 
     async def prepare_ingestion(self, request: dict):
         await self.require_ready()
-        self.check_enrichment_assets()
+        modules = self.check_enrichment_assets()
         try:
             async with self.enrichment_lock:
                 result = await asyncio.wait_for(self.page.evaluate(
                     (Path(__file__).parent / "enrich.js").read_text(), {
-                        "coreModule": "assets/player-store-bd8f4b49.js",
-                        "helperModule": "assets/UiCallout-7750a374.js", "input": request,
+                        **modules, "input": request,
                         "deckId": int(os.environ.get("MIGAKU_INGEST_DECK_ID", "0")),
                         "cardTypeId": int(os.environ.get("MIGAKU_INGEST_CARD_TYPE_ID", "0")),
                     }), timeout=180)
@@ -268,15 +305,20 @@ class MigakuBrowser:
     def check_enrichment_assets(self):
         if not enrichment_compatible(self.extension, self.core['version']):
             raise WorkerError("unsupported_enrichment_extension", "Migaku's Card Creator adapter needs a compatibility review.")
+        if self.core['version'] == EXPERIMENTAL_VERSION and not experimental_profile_enabled():
+            raise WorkerError('experimental_extension_disabled',
+                'Migaku EA 1.31.0.17 needs explicit experimental opt-in; see the setup guide.')
+        core, helper = ENRICHMENT_ASSETS[self.core['version']]
+        return {'coreModule': 'assets/' + core, 'helperModule': 'assets/' + helper,
+                'exports': ENRICHMENT_EXPORTS[self.core['version']]}
 
     async def translate_text(self, request: dict):
         await self.require_ready()
         async def generate():
-            self.check_enrichment_assets()
+            modules = self.check_enrichment_assets()
             async with self.translation_lock:
                 return await self.page.evaluate((Path(__file__).parent / "translate.js").read_text(), {
-                    "coreModule": "assets/player-store-bd8f4b49.js",
-                    "helperModule": "assets/UiCallout-7750a374.js", "input": request,
+                    **modules, "input": request,
                 })
 
         try:
