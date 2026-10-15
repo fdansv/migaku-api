@@ -31,6 +31,17 @@ Set `MIGAKU_EXTENSION_PATH` to your installed extension directory containing `ma
 
 ```sh
 export MIGAKU_EXTENSION_PATH=/absolute/path/to/your/installed/migaku-extension
+.venv/bin/python -m migaku_api.doctor
+```
+
+The doctor is read-only and does not open a browser or inspect account sessions.
+Stop if it reports missing Chromium or unsupported extension assets. A matching
+version label alone is insufficient: card enrichment and translation also check
+the exact asset hashes. Other versions need an adapter compatibility review;
+the repository does not distribute an old extension or bypass these checks.
+Static success does not prove login or live RPC readiness. Once it passes:
+
+```sh
 MIGAKU_HEADLESS=0 .venv/bin/python -m migaku_api
 ```
 
@@ -52,6 +63,8 @@ curl --fail --silent --show-error \
   -d '{"language":"ja","text":"今日は図書館で本を読みました。"}' \
   http://127.0.0.1:8766/text/analyze
 ```
+
+`POST /text/translate` accepts `{"language":"ja","text":"本を読みました。"}` and returns the original text, `translation`, and `target_language`. It uses the account's configured Migaku translation language and custom translation prompt, without creating a card or requiring a deck. Text is limited to 2,000 characters; generation times out after 25 seconds once authentication is ready. The adapter requires the same verified extension assets as card enrichment.
 
 If a bearer token is configured, add `-H "Authorization: Bearer $MIGAKU_API_TOKEN"`. Analysis combines Migaku parsing and vocabulary status; punctuation and unrecognized fragments receive no guessed status. Offsets are UTF-16 code units.
 

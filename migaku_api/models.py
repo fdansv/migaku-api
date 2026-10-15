@@ -36,6 +36,10 @@ class TextRequest(BaseModel):
     text: str = Field(min_length=1, max_length=20000)
 
 
+class TranslationRequest(TextRequest):
+    text: str = Field(min_length=1, max_length=2000)
+
+
 class WordFocus(BaseModel):
     model_config = ConfigDict(extra="forbid")
     language: Literal["ja"] = "ja"

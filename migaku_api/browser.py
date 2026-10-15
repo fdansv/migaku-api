@@ -3,10 +3,26 @@ import hashlib
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 from playwright.async_api import async_playwright
 
+from .credentials import CredentialsError, load_credentials
+
+ENRICHMENT_VERSION = '1.31.0.16'
+ENRICHMENT_ASSETS = {
+    'player-store-bd8f4b49.js': 'e2674057579ef893eb83f82cab8d3814679085626073c9996896d62113a55b3f',
+    'UiCallout-7750a374.js': '619866c53648d4e02a0b75b9355732fa9318178e4751c9f9c6614f3a62c54f3c',
+}
+
+
+def enrichment_compatible(extension: Path, version: str) -> bool:
+    return version == ENRICHMENT_VERSION and all(
+        (extension / 'assets' / name).is_file() and
+        hashlib.sha256((extension / 'assets' / name).read_bytes()).hexdigest() == digest
+        for name, digest in ENRICHMENT_ASSETS.items()
+    )
 
 class WorkerError(Exception):
     def __init__(self, code: str, message: str):
@@ -60,7 +76,14 @@ class MigakuBrowser:
         self.core = None
         self.lock = asyncio.Lock()
         self.enrichment_lock = asyncio.Lock()
+        self.translation_lock = asyncio.Lock()
         self.sync_lock = asyncio.Lock()
+        self.auth_lock = asyncio.Lock()
+        self.credentials_file = Path(os.environ.get(
+            "MIGAKU_CREDENTIALS_FILE", Path(__file__).resolve().parent.parent / "CREDS"
+        )).expanduser()
+        self.auth_retry_at = 0.0
+        self.auth_error = None
         self.last_error = None
 
     async def start(self):
@@ -128,6 +151,53 @@ class MigakuBrowser:
             raise WorkerError(result["code"], str(result.get("message", "Migaku is still starting or needs login."))[:300])
         return result.get("value")
 
+    async def recover_authentication(self):
+        # Only sign in after an explicit logged-out result, never after a network
+        # or browser error. Concurrent requests share one bounded attempt.
+        async with self.auth_lock:
+            if await self.call("Firebase_waitForAuthCheckDone", timeout=15):
+                self.auth_retry_at = 0.0
+                self.auth_error = None
+                return True
+            if time.monotonic() < self.auth_retry_at:
+                return False
+            self.auth_retry_at = time.monotonic() + 300
+            try:
+                credentials = load_credentials(self.credentials_file)
+            except CredentialsError as exc:
+                self.auth_error = str(exc)
+                return False
+            if credentials is None:
+                self.auth_error = None
+                return False
+            self.auth_error = "login_failed"
+            try:
+                signed_in = await asyncio.wait_for(self._sign_in(credentials), timeout=45)
+                if signed_in and await self.call("Firebase_waitForAuthCheckDone", timeout=15):
+                    self.auth_retry_at = 0.0
+                    self.auth_error = self.last_error = None
+                    return True
+            except Exception:
+                # Playwright exceptions may include evaluation arguments; keep
+                # both exception text and credentials out of logs/API responses.
+                pass
+            return False
+
+    async def _sign_in(self, credentials):
+        # Use Migaku's complete login form: the bare Firebase sign-in RPC omits
+        # subscription checks and app/database initialization. A separate page
+        # preserves in-flight RPCs on the worker's main page.
+        page = await self.context.new_page()
+        try:
+            await page.goto(f"chrome-extension://{self.extension_id}/pages/app-window/index.html")
+            await page.locator('input[type="email"]').fill(credentials.email, timeout=15_000)
+            await page.locator('input[type="password"]').fill(credentials.password, timeout=15_000)
+            await page.locator('button[type="submit"]').click(timeout=15_000)
+            await page.locator('input[type="email"]').wait_for(state="hidden", timeout=30_000)
+            return True
+        finally:
+            await page.close()
+
     async def status(self):
         result = {"running": bool(self.context), "headless": self.headless,
                   "version": self.core["version"] if self.core else None,
@@ -137,19 +207,22 @@ class MigakuBrowser:
             return result
         try:
             result["authenticated"] = bool(await self.call("Firebase_waitForAuthCheckDone", timeout=15))
+            if not result["authenticated"]:
+                result["authenticated"] = await self.recover_authentication()
             if result["authenticated"]:
                 result["initial_sync_done"] = bool(await self.call("Syncer_isInitialPullSyncDone", timeout=15))
                 result["ready"] = result["initial_sync_done"]
             else:
-                result["error"] = "login_required"
+                result["error"] = self.auth_error or "login_required"
         except WorkerError as exc:
             result["error"] = exc.code
+        result["last_error"] = self.last_error
         return result
 
     async def require_ready(self):
         status = await self.status()
         if not status["ready"]:
-            raise WorkerError(status.get("error", "initial_sync_pending"), "Sign in to the isolated Migaku browser and wait for its initial sync.")
+            raise WorkerError(status.get("error", "initial_sync_pending"), "Migaku login or initial sync is pending. Check /worker for recovery status.")
 
     async def export_words(self, language: str):
         await self.require_ready()
@@ -173,16 +246,7 @@ class MigakuBrowser:
 
     async def prepare_ingestion(self, request: dict):
         await self.require_ready()
-        assets = {
-            "player-store-bd8f4b49.js": "e2674057579ef893eb83f82cab8d3814679085626073c9996896d62113a55b3f",
-            "UiCallout-7750a374.js": "619866c53648d4e02a0b75b9355732fa9318178e4751c9f9c6614f3a62c54f3c",
-        }
-        if self.core["version"] != "1.31.0.16" or any(
-            not (self.extension / "assets" / name).is_file() or
-            hashlib.sha256((self.extension / "assets" / name).read_bytes()).hexdigest() != digest
-            for name, digest in assets.items()
-        ):
-            raise WorkerError("unsupported_enrichment_extension", "Migaku's Card Creator adapter needs a compatibility review.")
+        self.check_enrichment_assets()
         try:
             async with self.enrichment_lock:
                 result = await asyncio.wait_for(self.page.evaluate(
@@ -200,6 +264,33 @@ class MigakuBrowser:
             raise WorkerError(result["error"], "Migaku could not fill the card. The sentence is retained for retry.")
         from .models import CardSubmission
         return CardSubmission.model_validate(result).model_dump()
+
+    def check_enrichment_assets(self):
+        if not enrichment_compatible(self.extension, self.core['version']):
+            raise WorkerError("unsupported_enrichment_extension", "Migaku's Card Creator adapter needs a compatibility review.")
+
+    async def translate_text(self, request: dict):
+        await self.require_ready()
+        async def generate():
+            self.check_enrichment_assets()
+            async with self.translation_lock:
+                return await self.page.evaluate((Path(__file__).parent / "translate.js").read_text(), {
+                    "coreModule": "assets/player-store-bd8f4b49.js",
+                    "helperModule": "assets/UiCallout-7750a374.js", "input": request,
+                })
+
+        try:
+            result = await asyncio.wait_for(generate(), timeout=25)
+        except asyncio.TimeoutError as exc:
+            raise WorkerError("translation_timeout", "Migaku's translation timed out. Try again.") from exc
+        except WorkerError:
+            raise
+        except Exception as exc:
+            raise WorkerError("translation_failed", "Migaku could not translate this text. Try again.") from exc
+        if not isinstance(result, dict) or result.get("error") or not result.get("translation"):
+            raise WorkerError(result.get("error", "translation_failed") if isinstance(result, dict) else "translation_failed",
+                              "Migaku could not translate this text. Try again.")
+        return result
 
     async def create_card(self, job_id: str, draft: dict):
         await self.require_ready()

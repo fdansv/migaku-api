@@ -8,6 +8,7 @@ services:
     environment:
       MIGAKU_API_TOKEN: ${MIGAKU_API_TOKEN:?Set a private API token in .env}
       MIGAKU_LANGUAGES: ja
+      MIGAKU_CREDENTIALS_FILE: ${MIGAKU_CREDENTIALS_FILE:-/data/CREDS}
     volumes:
       - ./.runtime:/data
       - ${MIGAKU_EXTENSION_PATH:?Set the Migaku extension directory in .env}:/extension:ro

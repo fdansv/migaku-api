@@ -14,3 +14,11 @@ __pycache__/
 research/
 build/
 dist/
+# Local account credentials and editor recovery files.
+creds
+CREDS
+CREDENTIALS
+credentials
+.*.sw?
+*.sw?
+*~

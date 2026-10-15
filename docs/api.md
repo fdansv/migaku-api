@@ -11,6 +11,7 @@
 | `POST /words/refresh?language=ja` | Replace a language's index after a successful full export |
 | `POST /words/known` | Mark the selected sentence span known, using Migaku's parsed identity and verified readback |
 | `POST /text/analyze` | Migaku parsing plus current word statuses |
+| `POST /text/translate` | Translate scanned text using the account's language and prompt settings, without creating a card |
 | `GET /decks?language=ja` | Actual destination decks and IDs |
 | `POST /decks` | Create/find a destination deck by name and language; uses Migaku's study defaults |
 | `GET /card-types?language=ja` | Actual card types, IDs, and field descriptions |
@@ -60,6 +61,8 @@ Offsets use UTF-16 code units, matching Qt and Migaku, and must select the exact
 Dictionary enrichment tries the selected surface first, then Migaku's parsed dictionary forms. The selected surface and original offsets are preserved even when the focus spans multiple Migaku tokens. If neither lookup returns an entry, the dictionary field may remain empty, as in Migaku's native card creator; translation and AI explanation are still required.
 
 `POST /text/analyze` now also returns `spans`, with the original surface text, UTF-16 start/end offsets and authoritative `KNOWN`, `UNKNOWN`, `LEARNING` or `IGNORED` status. Punctuation and unrecognized parser fragments receive no guessed status.
+
+`POST /text/translate` accepts `language` and `text` (1–2,000 characters). It returns those fields plus plain-text `translation` and `target_language`, using the account's configured translation language and custom translation prompt. It requires an authenticated, ready extension and the verified enrichment assets, but no deck, focus word or idempotency key. No card or durable job is created. After authentication readiness, translation generation has a 25-second timeout and does not block vocabulary RPCs. Failures return HTTP 503 with the worker error code.
 
 `POST /words/known` accepts `language`, `sentence`, `focus_word`, `focus_start` and `focus_end`, using the same UTF-16 span validation as ingestion. The selected span must match one recognized Migaku token. The route uses that token's dictionary form, reading and part of speech, so conjugated surfaces update the underlying word. It sets KNOWN without changing tracking/card fields, reads the status back and updates only that identity in the local index. It immediately returns the confirmed `word`, `synced: false` and `sync_pending: true`. A background worker retries cloud push; its pending revision survives service restarts and new updates during a push remain pending for the next push. `/worker` reports `word_sync.pending` and its last failure code. Vocabulary RPCs can run while card enrichment waits for AI; enrichment and cloud pushes each retain their own serialization. Retrying KNOWN is idempotent.
 

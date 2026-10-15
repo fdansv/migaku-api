@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .browser import MigakuBrowser, WorkerError
-from .models import CardSubmission, DeckRequest, Draft, Ingestion, TextRequest, WordFocus, WordStatus
+from .models import CardSubmission, DeckRequest, Draft, Ingestion, TextRequest, TranslationRequest, WordFocus, WordStatus
 from .queue import CardQueue, WordSyncQueue
 from .store import Conflict, Store
 
@@ -162,6 +162,10 @@ def create_app(runtime=None, browser=None, autostart=None, background=True):
     @app.get("/card-types")
     async def card_types(language: str = "ja"):
         return {"card_types": await browser.list_card_types(language)}
+
+    @app.post("/text/translate")
+    async def translate_text(request: TranslationRequest):
+        return await browser.translate_text(request.model_dump())
 
     @app.post("/text/analyze")
     async def analyze_text(request: TextRequest):

@@ -6,11 +6,36 @@ Install Migaku normally using your own account. Set `MIGAKU_EXTENSION_PATH` to t
 
 For a stable local installation, copy your installed extension into private `.runtime/extension/`, then point the variable there. Keep the snapshot private. Review/test extension updates before replacing it. General RPC discovery locates the current core factory dynamically, but sentence-card enrichment additionally requires the exact **1.31.0.16** asset hashes reviewed by this adapter.
 
+Before opening the first login window, run:
+
+```sh
+.venv/bin/python -m migaku_api.doctor
+```
+
+Use `--extension /absolute/path` to inspect a specific installation. The doctor
+does not start the worker, open the profile, query the cloud or create cards.
+It checks whether Chromium has been downloaded, discovers the extension RPC
+factory and verifies the supported enrichment/translation assets. An exit
+status of 1 means the complete pen setup is not statically ready. A factory
+found in a newer version is not proof of compatible method schemas. Obtain
+your own compatible installed extension or update/revalidate the adapter;
+do not disable the hash checks. Login, OS browser dependencies, cloud sync and
+actual account RPCs still require live checks through `/worker`.
+
 ## Login and persistent state
 
 Follow the README's headed first-login steps using the same runtime directory that the headless service will use. Only one process may own that directory/profile. Stop the headless service before signing in again with `MIGAKU_HEADLESS=0`, and stop the headed process before restarting the service.
 
 `.runtime/` contains the authenticated browser profile, vocabulary mirror, drafts and durable jobs. Protect/back up that directory. Passwords are not saved by the wrapper, but the profile contains signed-in session state and must stay private.
+
+For automatic recovery when that session expires, optionally create a private `CREDS` file in the checkout, or set `MIGAKU_CREDENTIALS_FILE` to another location. Use your Migaku account email as the username:
+
+```ini
+username=YOUR_ACCOUNT_EMAIL
+password=YOUR_ACCOUNT_PASSWORD
+```
+
+Run `chmod 600 CREDS`. The worker accepts only a regular file owned by its user, with no group/other permissions, and refuses symlinks. `CREDS` and editor swap files are ignored by Git; the Docker build allowlist excludes them too. The file is read again for each login attempt, so credentials can be updated without restarting. A confirmed logged-out session triggers Migaku's full email/password login form in a temporary extension page, including its normal account checks and initialization. Background checks and incoming operations can trigger recovery; failed attempts wait five minutes before retrying. The worker confirms authentication and initial sync before resuming operations. Passwords and login error details are not returned by the API. Accounts requiring an interactive challenge still need headed login.
 
 ## LAN access for a pen or eReader
 
@@ -37,6 +62,7 @@ A pen configuration uses this API root (without `/ingest` appended):
 | `MIGAKU_EXTENSION_PATH` | Installed extension directory; Linux Chrome discovery if absent |
 | `MIGAKU_RUNTIME_DIR` | Persistent private state; `.runtime` in checkout |
 | `MIGAKU_HEADLESS` | `1`; set `0` for interactive login |
+| `MIGAKU_CREDENTIALS_FILE` | Optional private login file; checkout `CREDS` by default |
 | `MIGAKU_HOST`, `MIGAKU_PORT` | `127.0.0.1`, `8766` |
 | `MIGAKU_API_TOKEN` | Bearer token; required by entrypoint for a network bind |
 | `MIGAKU_LANGUAGES` | Indexed languages; `ja` |
@@ -57,7 +83,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now migaku-api
 ```
 
-Complete interactive login first. User lingering is a separate host choice if the service should run without a desktop login.
+Complete interactive login first, or configure the optional private credentials file for automatic login. User lingering is a separate host choice if the service should run without a desktop login.
 
 ## Docker (experimental deployment)
 
