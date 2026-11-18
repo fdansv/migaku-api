@@ -61,8 +61,15 @@ class WordFocus(BaseModel):
         return self
 
 
+class PenPhoto(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    data: str = Field(min_length=4, max_length=533336)
+
+
 class Ingestion(WordFocus):
     translation: str = Field(default="", max_length=20000)
+    photo: PenPhoto | None = None
 
 
 class DeckRequest(BaseModel):

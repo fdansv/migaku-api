@@ -1,4 +1,5 @@
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,8 @@ import pytest
 from migaku_api.browser import MigakuBrowser, WorkerError
 from migaku_api.credentials import CredentialsError, load_credentials
 from tests.test_service import run
+
+pytestmark = pytest.mark.skipif(os.name != "posix", reason="Credential-file recovery requires POSIX file permissions")
 
 
 def write_credentials(path, password="example=password"):

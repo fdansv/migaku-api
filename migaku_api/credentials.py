@@ -17,6 +17,10 @@ class Credentials:
 
 
 def load_credentials(path: Path) -> Credentials | None:
+    if os.name != "posix":
+        # File mode and no-follow semantics below are POSIX-specific. Windows
+        # continues to use the persistent browser's interactive sign-in.
+        return None
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:

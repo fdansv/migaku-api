@@ -11,6 +11,10 @@ from playwright.async_api import async_playwright
 from .credentials import CredentialsError, load_credentials
 
 ENRICHMENT_ASSETS = {
+    '1.30.16.0': {
+        'player-store-5d70e484.js': '0e5d7d88bce55ee6a3048053171ced476bf08781402fa9d597866b5523251588',
+        'UiCallout-58baced7.js': '11b56ac3f64e0416775e14beda22d4e799366f5a32ab48459d0b90193f2e7f45',
+    },
     '1.31.0.16': {
         'player-store-bd8f4b49.js': 'e2674057579ef893eb83f82cab8d3814679085626073c9996896d62113a55b3f',
         'UiCallout-7750a374.js': '619866c53648d4e02a0b75b9355732fa9318178e4751c9f9c6614f3a62c54f3c',
@@ -21,6 +25,8 @@ ENRICHMENT_ASSETS = {
     },
 }
 ENRICHMENT_EXPORTS = {
+    '1.30.16.0': {'core': 'd', 'settings': 'u', 'format': 'ah', 'dictionary': 'k',
+                 'translation': 'u', 'explanation': 'y', 'lookupWithReading': 'C', 'frequencyLabels': 'D'},
     '1.31.0.16': {'core': 'd', 'settings': 'u', 'format': 'ah', 'dictionary': 'n', 'translation': 'd', 'explanation': 'C'},
     '1.31.0.17': {'core': 'd', 'settings': 'u', 'format': 'ah', 'dictionary': 'n', 'translation': 'T', 'explanation': 'x'},
 }
@@ -52,12 +58,12 @@ def find_extension() -> Path | None:
     root = Path.home() / ".config/google-chrome/Default/Extensions"
     candidates = []
     for manifest in root.glob("*/*/manifest.json"):
-        info = json.loads(manifest.read_text())
+        info = json.loads(manifest.read_text(encoding="utf-8"))
         name = info.get("name", "")
         if name.startswith("__MSG_"):
             messages = manifest.parent / "_locales" / info.get("default_locale", "en") / "messages.json"
             if messages.is_file():
-                name = json.loads(messages.read_text()).get(name[6:-2], {}).get("message", name)
+                name = json.loads(messages.read_text(encoding="utf-8")).get(name[6:-2], {}).get("message", name)
         if "migaku" in name.lower():
             version = tuple(int(x) for x in info["version"].split("."))
             candidates.append((version, manifest.parent))
@@ -66,9 +72,9 @@ def find_extension() -> Path | None:
 
 def discover_core(extension: Path) -> dict:
     """Discover the RPC factory instead of depending on a minified export name."""
-    manifest = json.loads((extension / "manifest.json").read_text())
+    manifest = json.loads((extension / "manifest.json").read_text(encoding="utf-8"))
     for asset in (extension / "assets").glob("*.js"):
-        text = asset.read_text(errors="replace")
+        text = asset.read_text(encoding="utf-8", errors="replace")
         if '"WordListMgr.queryWords"' not in text:
             continue
         factory = re.search(r"([\w$]+)=\(\)=>new Proxy\(\{\},\{get:", text)
@@ -78,7 +84,7 @@ def discover_core(extension: Path) -> dict:
         alias = re.search(r"(?:\{|,)" + re.escape(factory[1]) + r" as ([\w$]+)(?:,|\})", exported)
         if alias:
             return {"version": manifest["version"],
-                    "module": str(asset.relative_to(extension)), "export": alias[1]}
+                    "module": asset.relative_to(extension).as_posix(), "export": alias[1]}
     raise WorkerError("unsupported_extension", "Could not locate Migaku's core RPC factory in this extension version.")
 
 
@@ -284,12 +290,13 @@ class MigakuBrowser:
 
     async def prepare_ingestion(self, request: dict):
         await self.require_ready()
-        modules = self.check_enrichment_assets()
+        bundle = self.check_enrichment_assets()
+        destination = os.environ.get("MIGAKU_CARD_DESTINATION", "migaku")
         try:
             async with self.enrichment_lock:
                 result = await asyncio.wait_for(self.page.evaluate(
-                    (Path(__file__).parent / "enrich.js").read_text(), {
-                        **modules, "input": request,
+                    (Path(__file__).parent / "enrich.js").read_text(encoding="utf-8"), {
+                        **bundle, "input": request, "destination": destination,
                         "deckId": int(os.environ.get("MIGAKU_INGEST_DECK_ID", "0")),
                         "cardTypeId": int(os.environ.get("MIGAKU_INGEST_CARD_TYPE_ID", "0")),
                     }), timeout=180)
@@ -299,8 +306,9 @@ class MigakuBrowser:
             raise WorkerError("ingestion_generation_failed", "Migaku could not fill the card. The sentence is retained for retry.") from exc
         if result.get("error"):
             raise WorkerError(result["error"], "Migaku could not fill the card. The sentence is retained for retry.")
-        from .models import CardSubmission
-        return CardSubmission.model_validate(result).model_dump()
+        from .models import CardSubmission, Draft
+        model = Draft if destination == "anki" else CardSubmission
+        return model.model_validate(result).model_dump()
 
     def check_enrichment_assets(self):
         if not enrichment_compatible(self.extension, self.core['version']):
@@ -317,7 +325,7 @@ class MigakuBrowser:
         async def generate():
             modules = self.check_enrichment_assets()
             async with self.translation_lock:
-                return await self.page.evaluate((Path(__file__).parent / "translate.js").read_text(), {
+                return await self.page.evaluate((Path(__file__).parent / "translate.js").read_text(encoding="utf-8"), {
                     **modules, "input": request,
                 })
 

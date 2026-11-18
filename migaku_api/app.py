@@ -9,6 +9,8 @@ from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .browser import MigakuBrowser, WorkerError
+from .anki import AnkiDestination
+from .media import MediaStore
 from .models import CardSubmission, DeckRequest, Draft, Ingestion, TextRequest, TranslationRequest, WordFocus, WordStatus
 from .queue import CardQueue, WordSyncQueue
 from .store import Conflict, Store
@@ -20,7 +22,21 @@ def create_app(runtime=None, browser=None, autostart=None, background=True):
         autostart = os.environ.get("MIGAKU_AUTOSTART", "1") != "0"
     store = Store(runtime / "migaku.sqlite")
     browser = browser or MigakuBrowser(runtime, headless=os.environ.get("MIGAKU_HEADLESS", "1") != "0")
-    queue = CardQueue(store, browser)
+    destination_name = os.environ.get("MIGAKU_CARD_DESTINATION", "migaku")
+    if destination_name not in {"migaku", "anki"}:
+        raise ValueError("MIGAKU_CARD_DESTINATION must be migaku or anki")
+    # Prevent confusing Migaku card IDs with Anki note IDs in an existing queue.
+    stored_destination = store.db.execute("SELECT value FROM meta WHERE key='card_destination'").fetchone()
+    previous_destination = stored_destination[0] if stored_destination else "migaku"
+    if previous_destination != destination_name and store.db.execute("SELECT 1 FROM jobs LIMIT 1").fetchone():
+        store.close()
+        raise ValueError("Use a fresh MIGAKU_RUNTIME_DIR when changing card destination.")
+    with store.db:
+        store.db.execute("INSERT OR REPLACE INTO meta VALUES ('card_destination', ?)", (destination_name,))
+    media = MediaStore(runtime / "pen-photos")
+    media.prune(store)
+    destination = AnkiDestination(media=media) if destination_name == "anki" else browser
+    queue = CardQueue(store, browser, destination)
     word_sync = WordSyncQueue(store, browser)
     token = os.environ.get("MIGAKU_API_TOKEN", "")
     security = HTTPBearer(auto_error=False)
@@ -90,11 +106,13 @@ def create_app(runtime=None, browser=None, autostart=None, background=True):
     async def health():
         return {"service": "ok", "worker_running": bool(browser.context),
                 "extension_version": browser.core["version"] if browser.core else None,
+                "card_destination": destination_name, "pen_photos": destination_name == "anki",
                 "index": store.words_stats("ja")}
 
     @app.get("/worker")
     async def worker_status():
         result = await browser.status()
+        result["card_destination"] = destination_name
         result["word_sync"] = {"pending": store.word_sync_pending(), "last_error": word_sync.last_error}
         return result
 
@@ -227,7 +245,18 @@ def create_app(runtime=None, browser=None, autostart=None, background=True):
     async def ingest(request: Ingestion, idempotency_key: str | None = Header(None)):
         # Accept durably even while Migaku is offline. Enrichment happens in the
         # worker, before the write boundary, using Migaku's native generators.
-        return enqueue(idempotency_key, {"kind": "ingestion", "input": request.model_dump()})
+        payload = {"kind": "ingestion", "input": request.model_dump(exclude={"photo"})}
+        if request.photo:
+            if destination_name != "anki":
+                raise HTTPException(422, "Pen photos require the Anki destination.")
+            if not idempotency_key or len(idempotency_key) > 128:
+                raise HTTPException(400, "A valid Idempotency-Key is required.")
+            try:
+                payload["photo"] = media.save(request.photo)
+            except WorkerError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            media.prune(store)
+        return enqueue(idempotency_key, payload)
 
     @app.post("/drafts/{draft_id}/submit", status_code=202)
     async def submit_draft(draft_id: str, idempotency_key: str | None = Header(None)):
@@ -260,9 +289,9 @@ def create_app(runtime=None, browser=None, autostart=None, background=True):
 
     @app.get("/cards/{card_id}")
     async def get_card(card_id: int):
-        card = await browser.get_card(card_id)
+        card = await destination.get_card(card_id)
         if card is None:
-            raise HTTPException(404, "Card not found in Migaku")
+            raise HTTPException(404, "Card not found in destination")
         return card
 
     return app

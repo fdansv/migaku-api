@@ -1,5 +1,6 @@
 import copy
 
+import pytest
 from fastapi.testclient import TestClient
 
 from migaku_api.app import create_app
@@ -45,17 +46,48 @@ def test_ingestion_accepts_offline_and_reuses_key(tmp_path):
     assert browser.creations == browser.enrichments == 0
 
 
-def test_failed_enrichment_never_attempts_write_and_can_retry(tmp_path):
+def test_failed_enrichment_never_attempts_write_and_can_explicitly_retry(tmp_path):
     store, browser = Store(tmp_path / "jobs.sqlite"), EnrichingBrowser()
     queue = CardQueue(store, browser)
     job = store.enqueue("pen", {"kind": "ingestion", "input": INPUT})
     browser.fail_enrichment = True
     result = run(queue.process(job["id"]))
-    assert result["state"] == "blocked" and not result["write_attempted"]
+    assert result["state"] == "failed" and not result["write_attempted"]
     assert browser.creations == 0
     browser.fail_enrichment = False
     assert run(queue.process(job["id"]))["state"] == "synced"
     assert browser.creations == 1
+    store.close()
+
+
+@pytest.mark.parametrize("failure", ["ingestion_ai_failed", "ingestion_ai_timeout", "ingestion_timeout", "ingestion_generation_failed"])
+def test_ai_failure_is_not_automatically_regenerated_by_background_queue(tmp_path, monkeypatch, failure):
+    class FailingBrowser(EnrichingBrowser):
+        async def prepare_ingestion(self, request):
+            self.enrichments += 1
+            raise WorkerError(failure, "Generation failed")
+
+    class StopAfterTwoCycles(Exception):
+        pass
+
+    sleeps = 0
+
+    async def next_cycle(seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 2:
+            raise StopAfterTwoCycles()
+
+    store, browser = Store(tmp_path / "jobs.sqlite"), FailingBrowser()
+    queue = CardQueue(store, browser)
+    job = store.enqueue("reader-generation", {"kind": "ingestion", "input": INPUT})
+    monkeypatch.setattr("migaku_api.queue.asyncio.sleep", next_cycle)
+    with pytest.raises(StopAfterTwoCycles):
+        run(queue.run())
+    result = store.get_job(job["id"])
+    assert result["state"] == "failed" and result["error"] == failure
+    assert not result["write_attempted"]
+    assert browser.enrichments == 1 and browser.creations == 0
     store.close()
 
 

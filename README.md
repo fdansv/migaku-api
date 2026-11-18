@@ -18,6 +18,7 @@ this newer version rather than the verified one.
 - Mark a selected word known, with readback confirmation and durable background sync.
 - Queue prepared cards or send a sentence/focus span for Migaku-native dictionary, translation and AI enrichment.
 - Retain drafts/jobs across restarts and reconcile uncertain writes without blindly duplicating cards.
+- Optionally send cards to desktop Anki through [AnkiConnect](docs/anki.md).
 - Browse a small dashboard at `/` and interactive API documentation at `/docs`.
 
 ## Quick start (Linux)
